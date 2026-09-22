@@ -63,7 +63,7 @@ class LedgerStore:
 
     def _generate_next_id(self, run_id: str) -> str:
         cursor = self.conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM evidence WHERE run_id = ?", (run_id,))
+        cursor.execute("SELECT COUNT(*) FROM evidence")
         count = cursor.fetchone()[0]
         return f"ev_{count + 1:04d}"
 
