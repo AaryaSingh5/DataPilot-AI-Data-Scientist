@@ -2,23 +2,57 @@
 DataPilot — Streamlit Web Application
 Autonomous, multi-agent AI data scientist with cryptographic audit trails and hallucination firewall.
 """
+import hashlib
 import io
 import json
 import os
+import tempfile
 from pathlib import Path
 import streamlit as st
 import pandas as pd
 import duckdb
 
 from datapilot.ledger.store import LedgerStore
-from datapilot.llm.client import MockLLMClient, AnthropicClient
-from datapilot.ingestion.snapshot import snapshot_dataframe
-from datapilot.ingestion.profiler import profile_dataframe
-from datapilot.ingestion.roles import infer_roles
+from datapilot.llm.client import MockLLMClient
+from datapilot.ingestion.snapshot import SnapshotManager
+from datapilot.ingestion.profiler import profile_table
+from datapilot.ingestion.roles import infer_roles as _infer_roles_from_profile
 from datapilot.benchmark.synth import generate_pricing_experiment
 from datapilot.graph.workflow import DataPilotWorkflow
 from datapilot.graph.state import DataPilotState
 from datapilot.report.bundle import create_reproducibility_bundle
+
+
+# ── Pandas ↔ DuckDB bridge helpers ──────────────────────────────────────────
+
+def snapshot_dataframe(df: pd.DataFrame, snap_dir: Path, table_name: str = "data") -> dict:
+    """Register a pandas DataFrame into DuckDB, snapshot it, and return hash info."""
+    conn = duckdb.connect(":memory:")
+    conn.register(table_name, df)
+    mgr = SnapshotManager(snap_dir)
+    dataset_hash = mgr.create_snapshot(conn, [table_name])
+    return {"dataset_hash": dataset_hash, "conn": conn, "table_name": table_name}
+
+
+def profile_dataframe(df: pd.DataFrame, table_name: str = "data") -> dict:
+    """Profile a pandas DataFrame using the DuckDB profiler."""
+    conn = duckdb.connect(":memory:")
+    conn.register(table_name, df)
+    col_profiles = profile_table(conn, table_name)
+    dtypes = {col: str(df[col].dtype) for col in df.columns}
+    return {
+        "row_count": len(df),
+        "col_count": len(df.columns),
+        "dtypes": dtypes,
+        "col_profiles": col_profiles,
+    }
+
+
+def infer_roles(df: pd.DataFrame) -> dict:
+    """Infer column roles from a pandas DataFrame."""
+    col_profiles = profile_dataframe(df)["col_profiles"]
+    return _infer_roles_from_profile(col_profiles)
+
 
 # Configure Page
 st.set_page_config(
