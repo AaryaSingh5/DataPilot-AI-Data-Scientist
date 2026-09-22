@@ -1,0 +1,31 @@
+# Statistical and Evaluation Thresholds for DataPilot
+significance:
+  alpha: 0.05
+  fdr_q: 0.05
+  high_confidence_alpha: 0.01
+
+effect_size:
+  cohens_d:
+    small: 0.2
+    medium: 0.5
+    large: 0.8
+  pearson_r:
+    small: 0.1
+    medium: 0.3
+    large: 0.5
+
+sample_size:
+  min_n: 30
+  warning_n: 50
+
+power:
+  target_power: 0.80
+  alpha: 0.05
+
+collinearity:
+  max_vif: 5.0
+  extreme_vif: 10.0
+
+machine_learning:
+  min_r2: 0.0
+  leakage_feature_importance_threshold: 0.95
