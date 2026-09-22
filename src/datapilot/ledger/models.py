@@ -7,8 +7,8 @@ class Evidence(BaseModel):
 
     id: str                          # "ev_0001", sequential per run
     run_id: str
-    kind: Literal["plan", "validation", "sql", "stat_test", "model", "plot"]
-    produced_by: Literal["planner", "analyst", "sql", "stats", "ml", "viz", "system"]
+    kind: Literal["plan", "validation", "sql", "stat_test", "model", "plot", "analysis", "viz"]
+    produced_by: Literal["planner", "analyst", "sql", "stats", "ml", "viz", "system", "sql_agent", "stats_agent", "ml_agent", "viz_agent"]
     depends_on: list[str] = []       # evidence IDs this was derived from (provenance DAG)
     dataset_hash: str                # sha256 of the snapshot it ran on
     code: str                        # exact SQL / Python / tool-call spec executed
