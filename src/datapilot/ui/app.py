@@ -23,6 +23,13 @@ from datapilot.graph.state import DataPilotState
 from datapilot.report.bundle import create_reproducibility_bundle
 
 
+# ── Safety Constants ────────────────────────────────────────────────────────
+MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+MAX_UPLOAD_ROWS = 50_000
+ALLOWED_EXTENSIONS = {".csv", ".parquet", ".xlsx"}
+FORBIDDEN_EXTENSIONS = {".xlsm", ".xlsb", ".xltm", ".xlam"}
+
+
 # ── Pandas ↔ DuckDB bridge helpers ──────────────────────────────────────────
 
 def snapshot_dataframe(df: pd.DataFrame, snap_dir: Path, table_name: str = "data") -> dict:
@@ -62,7 +69,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Custom Styling (Dark theme, glassmorphism, glowing badges)
+# Custom Styling
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
@@ -76,7 +83,7 @@ st.markdown("""
         border: 1px solid #2e2e42;
         padding: 24px;
         border-radius: 14px;
-        margin-bottom: 24px;
+        margin-bottom: 16px;
         box-shadow: 0 8px 24px -4px rgba(0,0,0,0.3);
     }
     
@@ -139,7 +146,6 @@ def init_session():
         snap_path.mkdir(parents=True, exist_ok=True)
         st.session_state.snapshot_dir = snap_path
     if "current_df" not in st.session_state:
-        # Load benchmark pricing experiment by default
         df, gt = generate_pricing_experiment(1200, 42)
         st.session_state.current_df = df
         st.session_state.current_gt = gt
@@ -173,23 +179,76 @@ with st.sidebar:
             st.session_state.dataset_name = "saas_pricing_experiment"
             st.success("Loaded synthetic pricing benchmark!")
     else:
-        uploaded_file = st.file_uploader("Upload data file", type=["csv", "parquet", "xlsx"])
+        uploaded_file = st.file_uploader(
+            "Upload data file (Max 10 MB, 50,000 rows)",
+            type=["csv", "parquet", "xlsx"],
+        )
         if uploaded_file:
-            if uploaded_file.name.endswith(".csv"):
-                df = pd.read_csv(uploaded_file)
-            elif uploaded_file.name.endswith(".parquet"):
-                df = pd.read_parquet(uploaded_file)
+            file_ext = Path(uploaded_file.name).suffix.lower()
+            if file_ext in FORBIDDEN_EXTENSIONS:
+                st.error("❌ Macro-enabled Excel files (.xlsm) are rejected for security. Upload standard .csv, .parquet, or .xlsx.")
+            elif file_ext not in ALLOWED_EXTENSIONS:
+                st.error(f"❌ Format '{file_ext}' not supported. Allowed: .csv, .parquet, .xlsx")
+            elif uploaded_file.size > MAX_UPLOAD_SIZE_BYTES:
+                st.error(f"❌ File size ({uploaded_file.size / (1024*1024):.1f} MB) exceeds maximum limit of 10 MB.")
             else:
-                df = pd.read_excel(uploaded_file)
-            st.session_state.current_df = df
-            st.session_state.dataset_name = Path(uploaded_file.name).stem
+                try:
+                    if file_ext == ".csv":
+                        df_upload = pd.read_csv(uploaded_file)
+                    elif file_ext == ".parquet":
+                        df_upload = pd.read_parquet(uploaded_file)
+                    else:
+                        df_upload = pd.read_excel(uploaded_file)
+
+                    if len(df_upload) > MAX_UPLOAD_ROWS:
+                        st.error(f"❌ Dataset contains {len(df_upload):,} rows, exceeding maximum demo limit of 50,000 rows.")
+                    else:
+                        st.session_state.current_df = df_upload
+                        st.session_state.dataset_name = Path(uploaded_file.name).stem
+                        st.success(f"Loaded '{uploaded_file.name}' ({len(df_upload):,} rows, {len(df_upload.columns)} cols)")
+                except Exception as exc:
+                    st.error(f"❌ Failed to parse file: {exc}")
 
     st.markdown("---")
     st.markdown("#### ⚙️ Engine Settings")
     llm_mode = st.selectbox(
         "LLM Client",
-        ["Mock Client (Deterministic)", "NVIDIA AI (Llama 3.3 70B)", "Anthropic Claude"]
+        ["Mock Client (Deterministic)", "NVIDIA AI (Llama 3.2 11B)", "Anthropic Claude"],
+        index=0,  # Default to Mock mode
     )
+
+    # Demo Authentication & Key Management
+    session_api_key = None
+    if llm_mode != "Mock Client (Deterministic)":
+        st.markdown("##### 🔐 Authentication")
+        provider_name = "NVIDIA" if "NVIDIA" in llm_mode else "Anthropic"
+        env_var_name = "NVIDIA_API_KEY" if "NVIDIA" in llm_mode else "ANTHROPIC_API_KEY"
+        
+        env_key = os.environ.get(env_var_name)
+        demo_pwd = os.environ.get("DEMO_PASSWORD")
+        
+        if env_key:
+            st.caption(f"✓ {provider_name} API Key loaded from environment.")
+            session_api_key = env_key
+        else:
+            auth_method = st.radio(
+                "Access Method",
+                ["Demo Password", "Custom API Key"],
+                key="auth_method_radio",
+            )
+            if auth_method == "Demo Password":
+                pwd_input = st.text_input("Demo Password", type="password", key="demo_pwd_input")
+                if pwd_input:
+                    if demo_pwd and pwd_input == demo_pwd:
+                        st.success("✓ Demo password accepted.")
+                    else:
+                        st.error("❌ Invalid demo password.")
+            else:
+                key_input = st.text_input(f"{provider_name} API Key", type="password", key="custom_api_key_input")
+                if key_input:
+                    session_api_key = key_input
+                    st.caption("✓ Key active in session memory only (never saved).")
+
     alpha = st.slider("Significance Alpha (α)", 0.01, 0.10, 0.05, 0.01)
     fdr_q = st.slider("FDR q-value", 0.01, 0.10, 0.05, 0.01)
 
@@ -203,6 +262,13 @@ profile = profile_dataframe(df)
 roles = infer_roles(df)
 snap_result = snapshot_dataframe(df, snap_dir, table_name="data")
 d_hash = snap_result["dataset_hash"]
+
+
+# --- VISIBLE DEMO WARNING BANNER ---
+st.warning(
+    "⚠️ **Experimental Demo**: Results are generated by multi-agent AI heuristics and rule-based consistency checks. "
+    "This output is not a substitute for review by a professional statistician."
+)
 
 
 # --- HEADER ---
@@ -250,12 +316,12 @@ with tab_investigate:
         with st.spinner("Executing DataPilot multi-agent workflow..."):
             provider_map = {
                 "Mock Client (Deterministic)": "mock",
-                "NVIDIA AI (Llama 3.3 70B)": "nvidia",
+                "NVIDIA AI (Llama 3.2 11B)": "nvidia",
                 "Anthropic Claude": "anthropic",
             }
             target_provider = provider_map.get(llm_mode, "mock")
             try:
-                llm_client = get_llm_client(provider=target_provider)
+                llm_client = get_llm_client(provider=target_provider, api_key=session_api_key)
 
                 if isinstance(llm_client, MockLLMClient):
                     # Register standard responses for benchmark
@@ -368,7 +434,7 @@ with tab_investigate:
         for c in rep.get("conclusions", []):
             st.markdown(f"""
             <div class="hypothesis-card">
-                <strong>{c.get('hypothesis_id')}: {c.get('verdict').upper()}</strong> (Confidence: {c.get('confidence')})<br>
+                <strong>{c.get('hypothesis_id')}: {c.get('verdict', '').upper()}</strong> (Confidence: {c.get('confidence')})<br>
                 {c.get('summary')}
             </div>
             """, unsafe_allow_html=True)
