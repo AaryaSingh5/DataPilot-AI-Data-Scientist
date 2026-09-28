@@ -7,7 +7,7 @@ import duckdb
 from langgraph.graph import StateGraph, START, END
 
 from datapilot.graph.state import DataPilotState
-from datapilot.llm.client import LLMClient
+from datapilot.llm.client import LLMClient, LLMBudgetExceeded
 from datapilot.ledger.store import LedgerStore
 from datapilot.agents.planner import PlannerAgent
 from datapilot.agents.sql_agent import SQLAgent
@@ -17,6 +17,9 @@ from datapilot.agents.viz_agent import VizAgent
 from datapilot.agents.analyst import AnalystAgent
 from datapilot.agents.evaluator import EvaluatorAgent
 from datapilot.agents.report_agent import ReportAgent
+
+
+MAX_EXECUTOR_STEPS = 5
 
 
 class DataPilotWorkflow:
@@ -46,7 +49,7 @@ class DataPilotWorkflow:
             if pq_files:
                 table_name = pq_files[0].stem
                 for pq in pq_files:
-                    conn.execute(f"CREATE VIEW \"{pq.stem}\" AS SELECT * FROM read_parquet('{pq}')")
+                    conn.execute(f'CREATE VIEW "{pq.stem}" AS SELECT * FROM read_parquet(\'{pq}\')')
         return conn, table_name
 
     def _build_graph(self):
@@ -54,6 +57,7 @@ class DataPilotWorkflow:
 
         # Node: Planner
         def planner_node(state: DataPilotState) -> Dict[str, Any]:
+            print(" -> Running Planner Node...")
             plan = self.planner.run(
                 run_id=state["run_id"],
                 dataset_hash=state["dataset_hash"],
@@ -64,12 +68,14 @@ class DataPilotWorkflow:
             eids = list(state.get("evidence_ids", []))
             if "_evidence_id" in plan:
                 eids.append(plan["_evidence_id"])
+            print(f" -> Planner completed. Hypotheses: {len(plan.get('hypotheses', []))}, Steps: {len(plan.get('plan', []))}")
             return {"plan": plan, "evidence_ids": eids}
 
         # Node: Executor
         def executor_node(state: DataPilotState) -> Dict[str, Any]:
+            print(" -> Running Executor Node...")
             plan = state.get("plan", {})
-            steps = plan.get("plan", [])
+            steps = plan.get("plan", [])[:MAX_EXECUTOR_STEPS]  # Max steps guard
             hypotheses = plan.get("hypotheses", [])
             hyp_map = {h.get("id"): h for h in hypotheses if h.get("id")}
             eids = list(state.get("evidence_ids", []))
@@ -80,12 +86,15 @@ class DataPilotWorkflow:
             for step in steps:
                 agent_type = step.get("agent", "").lower()
                 hid = step.get("hypothesis_id", "")
-                hyp = hyp_map.get(hid, {
-                    "id": hid,
-                    "statement": step.get("action", ""),
-                    "columns": list(state["role_map"].keys()),
-                    "test_type": "before_after",
-                })
+                hyp = hyp_map.get(
+                    hid,
+                    {
+                        "id": hid,
+                        "statement": step.get("action", ""),
+                        "columns": list(state["role_map"].keys()),
+                        "test_type": "before_after",
+                    },
+                )
                 action_desc = step.get("action", "")
 
                 try:
@@ -122,7 +131,9 @@ class DataPilotWorkflow:
                             depends_on=eids[-1:] if eids else None,
                         )
                         eids.append(ev_id)
-                except Exception as exc:
+                except LLMBudgetExceeded:
+                    raise
+                except Exception:
                     pass
 
             # Gather all evidence dicts
@@ -136,6 +147,7 @@ class DataPilotWorkflow:
 
         # Node: Analyst
         def analyst_node(state: DataPilotState) -> Dict[str, Any]:
+            print(" -> Running Analyst Node...")
             evidences = state.get("evidences", [])
             eids = list(state.get("evidence_ids", []))
             plan = state.get("plan", {})
@@ -150,14 +162,15 @@ class DataPilotWorkflow:
             eids.append(analysis_ev_id)
             analysis_ev = self.store.get_evidence(analysis_ev_id)
             analysis = analysis_ev.result if analysis_ev else {}
-            # Update evidences list
             if analysis_ev:
                 evidences.append(analysis_ev.model_dump())
 
+            print(" -> Analyst Node completed.")
             return {"analysis": analysis, "evidence_ids": eids, "evidences": evidences}
 
         # Node: Evaluator
         def evaluator_node(state: DataPilotState) -> Dict[str, Any]:
+            print(" -> Running Evaluator Node...")
             evidences = state.get("evidences", [])
             eids = list(state.get("evidence_ids", []))
 
@@ -173,10 +186,12 @@ class DataPilotWorkflow:
                 if ev_obj:
                     evidences.append(ev_obj.model_dump())
 
+            print(f" -> Evaluator Node completed. Overall score: {eval_res.get('overall_score')}")
             return {"evaluation": eval_res, "evidence_ids": eids, "evidences": evidences}
 
         # Node: Visualization
         def viz_node(state: DataPilotState) -> Dict[str, Any]:
+            print(" -> Running Visualization Node...")
             evidences = state.get("evidences", [])
             eids = list(state.get("evidence_ids", []))
 
@@ -192,10 +207,12 @@ class DataPilotWorkflow:
             if viz_ev:
                 evidences.append(viz_ev.model_dump())
 
+            print(f" -> Visualization Node completed. Generated {len(charts)} chart(s).")
             return {"charts": charts, "evidence_ids": eids, "evidences": evidences}
 
         # Node: Report
         def report_node(state: DataPilotState) -> Dict[str, Any]:
+            print(" -> Running Report Node...")
             eids = list(state.get("evidence_ids", []))
             report = self.report_agent.run(
                 run_id=state["run_id"],
@@ -212,6 +229,7 @@ class DataPilotWorkflow:
             if "_evidence_id" in report:
                 eids.append(report["_evidence_id"])
 
+            print(f" -> Report Node completed. Firewall Passed: {report.get('firewall', {}).get('passed')}")
             return {
                 "report": report,
                 "firewall_passed": report.get("firewall", {}).get("passed", False),
@@ -237,4 +255,32 @@ class DataPilotWorkflow:
         return builder.compile()
 
     def run(self, initial_state: DataPilotState) -> DataPilotState:
-        return self.graph.invoke(initial_state)
+        try:
+            return self.graph.invoke(initial_state)
+        except LLMBudgetExceeded as exc:
+            err_msg = str(exc)
+            errors = list(initial_state.get("errors", []))
+            errors.append(err_msg)
+            # Produce fallback state surfacing budget exceeded
+            fallback_report = {
+                "title": f"DataPilot Report (Halted: Budget Exceeded)",
+                "run_id": initial_state.get("run_id", "run_error"),
+                "dataset_hash": initial_state.get("dataset_hash", ""),
+                "question": initial_state.get("question", ""),
+                "executive_summary": f"Execution halted: {err_msg}",
+                "plan": initial_state.get("plan", {}),
+                "conclusions": [],
+                "evaluation": {"overall_score": 0.0, "status": "halted"},
+                "charts": [],
+                "evidences": initial_state.get("evidences", []),
+                "firewall": {"passed": False, "violations": [], "warnings": []},
+                "markdown": f"# DataPilot Report\n\n**Execution Halted**: {err_msg}",
+                "html": f"<h1>DataPilot Report</h1><p><strong>Execution Halted</strong>: {err_msg}</p>",
+            }
+            res_state: DataPilotState = {
+                **initial_state,
+                "report": fallback_report,
+                "errors": errors,
+                "firewall_passed": False,
+            }
+            return res_state

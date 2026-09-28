@@ -39,9 +39,7 @@ def create_reproducibility_bundle(
         evidences = report_data.get("evidences", [])
         if not evidences:
             # Query from store if not in report_data
-            cursor = store.conn.cursor()
-            cursor.execute("SELECT * FROM evidence WHERE run_id = ? ORDER BY id ASC", (run_id,))
-            rows = [dict(r) for r in cursor.fetchall()]
+            rows = store.list_evidence(run_id)
             for r in rows:
                 for k in ["depends_on", "params", "result", "columns", "lib_versions"]:
                     if isinstance(r.get(k), str):

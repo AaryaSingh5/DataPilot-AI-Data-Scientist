@@ -148,8 +148,8 @@ class HallucinationFirewall:
             self._extract_numbers(res, ev_nums)
 
         for val, is_pct, raw_str in clean_nums:
-            # Skip hypothesis numbers (e.g. H1 -> 1)
-            if re.search(rf"\b[Hh]{int(val)}\b", text):
+            # Skip hypothesis numbers (e.g. H1 -> 1) and evidence ID numbers (e.g. ev_0004 -> 4)
+            if re.search(rf"\b[Hh]{int(val)}\b", text) or re.search(rf"\bev_0*{int(val)}\b", text, re.IGNORECASE):
                 continue
             matched = False
             candidates = [val]

@@ -3,7 +3,7 @@
 > **Rigorous, reproducible, and statistically justified data analysis — fully autonomous, multi-agent, and cryptographically auditable.**
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python)](https://python.org)
-[![Tests](https://img.shields.io/badge/Tests-51%20passing-brightgreen?logo=pytest)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-57%20passing-brightgreen?logo=pytest)](tests/)
 [![Streamlit](https://img.shields.io/badge/UI-Streamlit-ff4b4b?logo=streamlit)](src/datapilot/ui/app.py)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
@@ -44,7 +44,7 @@ datapilot/
 │   ├── graph/           # LangGraph StateGraph workflow & session manager
 │   ├── ingestion/       # CSV/Parquet/Excel loaders, DuckDB snapshots, profiler, roles
 │   ├── ledger/          # Append-only SQLite store, hash chaining, provenance DAG, replay
-│   ├── llm/             # Mock & Anthropic LLM clients
+│   ├── llm/             # Mock, Anthropic, & NVIDIA LLM clients
 │   ├── prompts/         # Jinja2 prompt templates for all agents
 │   ├── report/          # Markdown/HTML renderer + reproducibility bundle exporter
 │   ├── sandbox/         # SQL guard, SQL executor, Python AST guard, Python runner
@@ -83,7 +83,7 @@ Open [http://localhost:8501](http://localhost:8501) in your browser.
 
 ```bash
 pytest -v
-# 51 tests — unit, adversarial, benchmark, workflow
+# 57 tests — unit, adversarial, benchmark, workflow
 ```
 
 ---
@@ -102,7 +102,9 @@ The Streamlit app provides 4 tabs:
 **Sidebar options:**
 - Switch between the **synthetic benchmark** (SaaS pricing experiment) or **upload your own** CSV/Parquet/Excel
 - Configure **significance alpha (α)** and **FDR q-value**
-- Select **Mock (deterministic)** or **Anthropic Claude** LLM backend
+- Select **Mock Client (Deterministic)**, **NVIDIA AI (Llama 3.3 70B)**, or **Anthropic Claude** LLM provider
+
+> ⚠️ **Data Privacy Note:** When using a cloud LLM provider (`NVIDIA AI` or `Anthropic Claude`), schema descriptions, query results, and statistical summaries derived from uploaded datasets are transmitted to the selected LLM provider API. No external transmission occurs when using the Mock Client.
 
 ---
 

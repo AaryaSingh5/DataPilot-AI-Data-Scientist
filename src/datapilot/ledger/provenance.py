@@ -11,12 +11,8 @@ class ProvenanceDAG:
     def _build_graph(self) -> nx.DiGraph:
         G = nx.DiGraph()
         
-        cursor = self.store.conn.cursor()
-        cursor.execute("SELECT id FROM evidence WHERE run_id = ?", (self.run_id,))
-        rows = cursor.fetchall()
-        
-        for row in rows:
-            ev_id = row['id']
+        for row in self.store.list_evidence(self.run_id):
+            ev_id = row["id"]
             ev = self.store.get_evidence(ev_id)
             if ev:
                 G.add_node(ev_id, kind=ev.kind, produced_by=ev.produced_by, columns=ev.columns)

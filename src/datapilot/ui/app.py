@@ -13,7 +13,7 @@ import pandas as pd
 import duckdb
 
 from datapilot.ledger.store import LedgerStore
-from datapilot.llm.client import MockLLMClient
+from datapilot.llm.client import MockLLMClient, get_llm_client, LLMBudgetExceeded
 from datapilot.ingestion.snapshot import SnapshotManager
 from datapilot.ingestion.profiler import profile_table
 from datapilot.ingestion.roles import infer_roles as _infer_roles_from_profile
@@ -186,7 +186,10 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("#### ⚙️ Engine Settings")
-    llm_mode = st.selectbox("LLM Client", ["Mock Client (Deterministic)", "Anthropic Claude"])
+    llm_mode = st.selectbox(
+        "LLM Client",
+        ["Mock Client (Deterministic)", "NVIDIA AI (Llama 3.3 70B)", "Anthropic Claude"]
+    )
     alpha = st.slider("Significance Alpha (α)", 0.01, 0.10, 0.05, 0.01)
     fdr_q = st.slider("FDR q-value", 0.01, 0.10, 0.05, 0.01)
 
@@ -245,79 +248,88 @@ with tab_investigate:
 
     if run_btn:
         with st.spinner("Executing DataPilot multi-agent workflow..."):
-            # Initialize Mock or Anthropic client
-            mock_llm = MockLLMClient()
-
-            # Register standard responses for benchmark
-            mock_llm.register("Planner", json.dumps({
-                "hypotheses": [
-                    {
-                        "id": "H1",
-                        "statement": "Pricing change increased revenue post-experiment",
-                        "columns": ["is_treated", "revenue_diff"],
-                        "test_type": "before_after",
-                    }
-                ],
-                "plan": [
-                    {
-                        "step": 1,
-                        "agent": "stats",
-                        "action": "Run before_after comparison on revenue_diff",
-                        "hypothesis_id": "H1",
-                    }
-                ],
-            }))
-            mock_llm.register("Stats Agent", json.dumps({
-                "test": "before_after",
-                "columns": {"a": "pre_revenue", "b": "post_revenue"},
-                "justification": "Compare revenue before and after experiment",
-            }))
-            mock_llm.register("Lead Analyst", json.dumps({
-                "conclusions": [
-                    {
-                        "hypothesis_id": "H1",
-                        "verdict": "supported",
-                        "confidence": "high",
-                        "summary": "Revenue grew significantly following the pricing adjustment.",
-                        "caveats": ["Controlled for baseline customer segment distributions."],
-                        "evidence_ids": ["ev_0002"],
-                    }
-                ],
-                "overall_summary": "The pricing change produced a statistically robust increase in revenue.",
-            }))
-            mock_llm.register("Visualization Agent", json.dumps({
-                "charts": [
-                    {
-                        "evidence_id": "ev_0002",
-                        "chart_type": "bar",
-                        "x": "segment",
-                        "y": "revenue_diff",
-                        "title": "Revenue Change by Customer Segment",
-                    }
-                ]
-            }))
-
-            wf = DataPilotWorkflow(llm=mock_llm, store=store, snapshot_dir=snap_dir)
-
-            import uuid
-            run_id = f"run_{uuid.uuid4().hex[:8]}"
-
-            initial_state: DataPilotState = {
-                "run_id": run_id,
-                "dataset_hash": d_hash,
-                "question": user_question,
-                "schema": {"data": profile["dtypes"]},
-                "role_map": roles,
-                "table_name": "data",
-                "snapshot_dir": str(snap_dir),
-                "evidence_ids": [],
-                "evidences": [],
+            provider_map = {
+                "Mock Client (Deterministic)": "mock",
+                "NVIDIA AI (Llama 3.3 70B)": "nvidia",
+                "Anthropic Claude": "anthropic",
             }
+            target_provider = provider_map.get(llm_mode, "mock")
+            try:
+                llm_client = get_llm_client(provider=target_provider)
 
-            final_state = wf.run(initial_state)
-            st.session_state.last_report = final_state.get("report")
-            st.session_state.last_state = final_state
-            st.success("Investigation complete! Results verified through Hallucination Firewall.")
+                if isinstance(llm_client, MockLLMClient):
+                    # Register standard responses for benchmark
+                    llm_client.register("Planner", json.dumps({
+                        "hypotheses": [
+                            {
+                                "id": "H1",
+                                "statement": "Pricing change increased revenue post-experiment",
+                                "columns": ["is_treated", "revenue_diff"],
+                                "test_type": "before_after",
+                            }
+                        ],
+                        "plan": [
+                            {
+                                "step": 1,
+                                "agent": "stats",
+                                "action": "Run before_after comparison on revenue_diff",
+                                "hypothesis_id": "H1",
+                            }
+                        ],
+                    }))
+                    llm_client.register("Stats Agent", json.dumps({
+                        "test": "before_after",
+                        "columns": {"a": "pre_revenue", "b": "post_revenue"},
+                        "justification": "Compare revenue before and after experiment",
+                    }))
+                    llm_client.register("Lead Analyst", json.dumps({
+                        "conclusions": [
+                            {
+                                "hypothesis_id": "H1",
+                                "verdict": "supported",
+                                "confidence": "high",
+                                "summary": "Revenue grew significantly following the pricing adjustment.",
+                                "caveats": ["Controlled for baseline customer segment distributions."],
+                                "evidence_ids": ["ev_0002"],
+                            }
+                        ],
+                        "overall_summary": "The pricing change produced a statistically robust increase in revenue.",
+                    }))
+                    llm_client.register("Visualization Agent", json.dumps({
+                        "charts": [
+                            {
+                                "evidence_id": "ev_0002",
+                                "chart_type": "bar",
+                                "x": "segment",
+                                "y": "revenue_diff",
+                                "title": "Revenue Change by Customer Segment",
+                            }
+                        ]
+                    }))
+
+                wf = DataPilotWorkflow(llm=llm_client, store=store, snapshot_dir=snap_dir)
+
+                import uuid
+                run_id = f"run_{uuid.uuid4().hex[:8]}"
+
+                initial_state: DataPilotState = {
+                    "run_id": run_id,
+                    "dataset_hash": d_hash,
+                    "question": user_question,
+                    "schema": {"data": profile["dtypes"]},
+                    "role_map": roles,
+                    "table_name": "data",
+                    "snapshot_dir": str(snap_dir),
+                    "evidence_ids": [],
+                    "evidences": [],
+                }
+
+                final_state = wf.run(initial_state)
+                st.session_state.last_report = final_state.get("report")
+                st.session_state.last_state = final_state
+                st.success("Investigation complete! Results verified through Hallucination Firewall.")
+            except Exception as exc:
+                st.error(f"Failed to run investigation: {exc}")
 
     # Show live or previous execution summary
     if st.session_state.last_report:
@@ -427,9 +439,7 @@ with tab_ledger:
     st.markdown("### 🛡️ Immutable Cryptographic Audit Ledger")
     st.caption("Every statistical test, SQL query, and analysis is hash-chained and tamper-evident.")
 
-    cursor = store.conn.cursor()
-    cursor.execute("SELECT id, run_id, kind, produced_by, status, created_at, prev_hash, hash FROM evidence ORDER BY created_at DESC LIMIT 50")
-    rows = [dict(r) for r in cursor.fetchall()]
+    rows = store.list_recent(50)
 
     if rows:
         ledger_df = pd.DataFrame(rows)

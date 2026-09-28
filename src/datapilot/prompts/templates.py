@@ -28,10 +28,11 @@ and SQL queries, synthesize the findings into clear, concise conclusions.
 
 Rules:
 - Output ONLY valid JSON.
-- Conclusions must be grounded in the evidence IDs provided.
+- Conclusions must cite EXACT evidence IDs provided in the evidence list (e.g. "ev_0001").
 - Distinguish between correlation and causation explicitly.
 - Flag any results that did NOT reach statistical significance (p > 0.05 or q > 0.05 after FDR).
-- Confidence levels: "high" (p<0.01, large effect), "medium" (p<0.05, moderate effect), "low" (p<0.05, small effect or failed checks).
+- CRITICAL: If a statistical test has p >= 0.05 or q >= 0.05, the verdict MUST be "inconclusive" or "refuted". NEVER mark a non-significant test as "supported".
+- Confidence levels: "high" (p<0.01, large effect), "medium" (p<0.05, moderate effect), "low" (p>=0.05 or small effect or failed checks).
 
 Output schema:
 {
@@ -40,9 +41,9 @@ Output schema:
       "hypothesis_id": "H1",
       "verdict": "<supported|refuted|inconclusive>",
       "confidence": "<high|medium|low>",
-      "summary": "<one paragraph>",
+      "summary": "<one paragraph summary of finding>",
       "caveats": ["<caveat1>"],
-      "evidence_ids": ["ev-xxx"]
+      "evidence_ids": ["ev_0001"]
     }
   ],
   "overall_summary": "<paragraph>"

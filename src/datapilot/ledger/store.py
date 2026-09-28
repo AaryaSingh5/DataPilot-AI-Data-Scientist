@@ -1,6 +1,7 @@
 import sqlite3
 import json
 import hashlib
+import threading
 from typing import Optional, List
 from pathlib import Path
 from datetime import datetime
@@ -10,7 +11,8 @@ class LedgerStore:
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.db_path))
+        self._lock = threading.RLock()
+        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._init_db()
 
@@ -76,9 +78,20 @@ class LedgerStore:
 
     def record_evidence(self, run_id: str, kind: str, produced_by: str, dataset_hash: str,
                         code: str, params: dict, result: dict, columns: list[str],
-                        status: str, depends_on: list[str] = None, 
+                        status: str, depends_on: list[str] = None,
                         artifact_path: str = None, artifact_hash: str = None,
                         error: str = None, lib_versions: dict = None) -> Evidence:
+        with self._lock:
+            return self._record_evidence_unlocked(
+                run_id, kind, produced_by, dataset_hash, code, params, result, columns,
+                status, depends_on, artifact_path, artifact_hash, error, lib_versions,
+            )
+
+    def _record_evidence_unlocked(self, run_id: str, kind: str, produced_by: str, dataset_hash: str,
+                                  code: str, params: dict, result: dict, columns: list[str],
+                                  status: str, depends_on: list[str] = None,
+                                  artifact_path: str = None, artifact_hash: str = None,
+                                  error: str = None, lib_versions: dict = None) -> Evidence:
         depends_on = depends_on or []
         lib_versions = lib_versions or {}
         
@@ -128,44 +141,68 @@ class LedgerStore:
         return Evidence(**ev_dict)
 
     def get_evidence(self, ev_id: str) -> Optional[Evidence]:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM evidence WHERE id = ?", (ev_id,))
-        row = cursor.fetchone()
-        if not row:
-            return None
-        
-        ev_dict = dict(row)
-        ev_dict["depends_on"] = json.loads(ev_dict["depends_on"])
-        ev_dict["params"] = json.loads(ev_dict["params"])
-        ev_dict["result"] = json.loads(ev_dict["result"])
-        ev_dict["columns"] = json.loads(ev_dict["columns"])
-        ev_dict["lib_versions"] = json.loads(ev_dict["lib_versions"])
-        
-        return Evidence(**ev_dict)
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT * FROM evidence WHERE id = ?", (ev_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
 
-    def verify_chain(self, run_id: str) -> bool:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM evidence WHERE run_id = ? ORDER BY id ASC", (run_id,))
-        rows = cursor.fetchall()
-        
-        expected_prev_hash = "0" * 64
-        for row in rows:
             ev_dict = dict(row)
             ev_dict["depends_on"] = json.loads(ev_dict["depends_on"])
             ev_dict["params"] = json.loads(ev_dict["params"])
             ev_dict["result"] = json.loads(ev_dict["result"])
             ev_dict["columns"] = json.loads(ev_dict["columns"])
             ev_dict["lib_versions"] = json.loads(ev_dict["lib_versions"])
-            
-            # Check prev_hash links correctly
-            if ev_dict["prev_hash"] != expected_prev_hash:
-                return False
-            
-            # Check current hash is valid
-            computed = self.compute_hash(ev_dict)
-            if computed != ev_dict["hash"]:
-                return False
-                
-            expected_prev_hash = ev_dict["hash"]
-            
-        return True
+
+            return Evidence(**ev_dict)
+
+    def verify_chain(self, run_id: str) -> bool:
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT * FROM evidence WHERE run_id = ? "
+                "ORDER BY CAST(SUBSTR(id, 4) AS INTEGER) ASC",
+                (run_id,),
+            )
+            rows = cursor.fetchall()
+
+            expected_prev_hash = "0" * 64
+            for row in rows:
+                ev_dict = dict(row)
+                ev_dict["depends_on"] = json.loads(ev_dict["depends_on"])
+                ev_dict["params"] = json.loads(ev_dict["params"])
+                ev_dict["result"] = json.loads(ev_dict["result"])
+                ev_dict["columns"] = json.loads(ev_dict["columns"])
+                ev_dict["lib_versions"] = json.loads(ev_dict["lib_versions"])
+
+                if ev_dict["prev_hash"] != expected_prev_hash:
+                    return False
+
+                computed = self.compute_hash(ev_dict)
+                if computed != ev_dict["hash"]:
+                    return False
+
+                expected_prev_hash = ev_dict["hash"]
+
+            return True
+
+    def list_recent(self, limit: int = 50) -> list[dict]:
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT id, run_id, kind, produced_by, status, created_at, prev_hash, hash "
+                "FROM evidence ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def list_evidence(self, run_id: str) -> list[dict]:
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT * FROM evidence WHERE run_id = ? "
+                "ORDER BY CAST(SUBSTR(id, 4) AS INTEGER) ASC",
+                (run_id,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
