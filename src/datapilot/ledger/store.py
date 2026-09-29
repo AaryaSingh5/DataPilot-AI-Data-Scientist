@@ -37,7 +37,10 @@ class LedgerStore:
                     error TEXT,
                     created_at TEXT NOT NULL,
                     prev_hash TEXT NOT NULL,
-                    hash TEXT NOT NULL
+                    hash TEXT NOT NULL,
+                    purpose TEXT NOT NULL DEFAULT '',
+                    execution_order INTEGER NOT NULL DEFAULT 0,
+                    exportable BOOLEAN NOT NULL DEFAULT 0
                 )
             """)
             
@@ -80,24 +83,33 @@ class LedgerStore:
                         code: str, params: dict, result: dict, columns: list[str],
                         status: str, depends_on: list[str] = None,
                         artifact_path: str = None, artifact_hash: str = None,
-                        error: str = None, lib_versions: dict = None) -> Evidence:
+                        error: str = None, lib_versions: dict = None,
+                        purpose: str = "", execution_order: int = 0, exportable: bool = False) -> Evidence:
         with self._lock:
             return self._record_evidence_unlocked(
                 run_id, kind, produced_by, dataset_hash, code, params, result, columns,
                 status, depends_on, artifact_path, artifact_hash, error, lib_versions,
+                purpose, execution_order, exportable
             )
 
     def _record_evidence_unlocked(self, run_id: str, kind: str, produced_by: str, dataset_hash: str,
                                   code: str, params: dict, result: dict, columns: list[str],
                                   status: str, depends_on: list[str] = None,
                                   artifact_path: str = None, artifact_hash: str = None,
-                                  error: str = None, lib_versions: dict = None) -> Evidence:
+                                  error: str = None, lib_versions: dict = None,
+                                  purpose: str = "", execution_order: int = 0, exportable: bool = False) -> Evidence:
         depends_on = depends_on or []
         lib_versions = lib_versions or {}
         
         prev_hash = self._get_last_hash(run_id)
         ev_id = self._generate_next_id(run_id)
         created_at = datetime.utcnow().isoformat()
+        
+        if execution_order == 0:
+            # Auto-compute based on current number of records for this run
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM evidence WHERE run_id = ?", (run_id,))
+            execution_order = cursor.fetchone()[0] + 1
 
         ev_dict = {
             "id": ev_id,
@@ -116,7 +128,10 @@ class LedgerStore:
             "status": status,
             "error": error,
             "created_at": created_at,
-            "prev_hash": prev_hash
+            "prev_hash": prev_hash,
+            "purpose": purpose,
+            "execution_order": execution_order,
+            "exportable": exportable
         }
         
         ev_hash = self.compute_hash(ev_dict)
@@ -127,15 +142,16 @@ class LedgerStore:
                 INSERT INTO evidence (
                     id, run_id, kind, produced_by, depends_on, dataset_hash, code,
                     params, result, columns, artifact_path, artifact_hash, lib_versions,
-                    status, error, created_at, prev_hash, hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    status, error, created_at, prev_hash, hash, purpose, execution_order, exportable
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 ev_dict["id"], ev_dict["run_id"], ev_dict["kind"], ev_dict["produced_by"],
                 json.dumps(ev_dict["depends_on"]), ev_dict["dataset_hash"], ev_dict["code"],
                 json.dumps(ev_dict["params"]), json.dumps(ev_dict["result"]), 
                 json.dumps(ev_dict["columns"]), ev_dict["artifact_path"], ev_dict["artifact_hash"],
                 json.dumps(ev_dict["lib_versions"]), ev_dict["status"], ev_dict["error"],
-                ev_dict["created_at"], ev_dict["prev_hash"], ev_dict["hash"]
+                ev_dict["created_at"], ev_dict["prev_hash"], ev_dict["hash"],
+                ev_dict["purpose"], ev_dict["execution_order"], ev_dict["exportable"]
             ))
 
         return Evidence(**ev_dict)
@@ -154,6 +170,8 @@ class LedgerStore:
             ev_dict["result"] = json.loads(ev_dict["result"])
             ev_dict["columns"] = json.loads(ev_dict["columns"])
             ev_dict["lib_versions"] = json.loads(ev_dict["lib_versions"])
+            if "exportable" in ev_dict:
+                ev_dict["exportable"] = bool(ev_dict["exportable"])
 
             return Evidence(**ev_dict)
 
@@ -175,6 +193,8 @@ class LedgerStore:
                 ev_dict["result"] = json.loads(ev_dict["result"])
                 ev_dict["columns"] = json.loads(ev_dict["columns"])
                 ev_dict["lib_versions"] = json.loads(ev_dict["lib_versions"])
+                if "exportable" in ev_dict:
+                    ev_dict["exportable"] = bool(ev_dict["exportable"])
 
                 if ev_dict["prev_hash"] != expected_prev_hash:
                     return False

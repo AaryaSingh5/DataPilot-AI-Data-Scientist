@@ -35,6 +35,8 @@ class VizAgent:
         user_msg = LLMMessage("user", f"Evidence items:\n{ev_summary}")
         chart_config = self.llm.complete_json(VIZ_AGENT_SYSTEM, [user_msg])
 
+        py_code_lines = ["import matplotlib.pyplot as plt", "import seaborn as sns", "import pandas as pd", "import numpy as np", "", "df = pd.read_parquet(dataset_path)"]
+
         charts = []
         for chart_def in chart_config.get("charts", []):
             ev_id = chart_def.get("evidence_id", "")
@@ -51,18 +53,42 @@ class VizAgent:
             if spec:
                 spec["evidence_id"] = ev_id
                 charts.append(spec)
+                
+                # Generate matplotlib code
+                py_code_lines.append(f"\n# {title}")
+                py_code_lines.append("plt.figure(figsize=(10, 6))")
+                if chart_type == "bar":
+                    x = chart_def.get("x", "")
+                    y = chart_def.get("y", "")
+                    py_code_lines.append(f"sns.barplot(data=df, x='{x}', y='{y}')")
+                elif chart_type == "line":
+                    x = chart_def.get("x", "")
+                    y = chart_def.get("y", "")
+                    py_code_lines.append(f"sns.lineplot(data=df, x='{x}', y='{y}')")
+                elif chart_type == "scatter":
+                    x = chart_def.get("x", "")
+                    y = chart_def.get("y", "")
+                    py_code_lines.append(f"sns.scatterplot(data=df, x='{x}', y='{y}')")
+                elif chart_type == "heatmap":
+                    py_code_lines.append("sns.heatmap(df.corr(), annot=True, cmap='coolwarm')")
+                elif chart_type == "waterfall":
+                    py_code_lines.append("# Waterfall chart requires 'waterfallcharts' or custom matplotlib code. Not fully mocked here.")
+                py_code_lines.append(f"plt.title('{title}')")
+                py_code_lines.append("plt.tight_layout()")
+                py_code_lines.append("plt.show()")
 
         ev = self.store.record_evidence(
             run_id=run_id,
             kind="viz",
             produced_by="viz_agent",
             dataset_hash=dataset_hash,
-            code="chart_collection",
+            code="\n".join(py_code_lines),
             params={},
             result={"charts": charts},
             columns=[],
             status="ok",
             depends_on=depends_on,
+            purpose="Generate visualizations for the report",
         )
         return ev.id
 

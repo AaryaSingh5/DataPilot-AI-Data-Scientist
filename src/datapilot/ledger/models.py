@@ -23,6 +23,9 @@ class Evidence(BaseModel):
     created_at: datetime
     prev_hash: str                   # hash chain for tamper evidence
     hash: str                        # sha256 over all fields + prev_hash
+    purpose: str = ""                # human-readable purpose
+    execution_order: int = 0         # execution order
+    exportable: bool = False         # true if used by claims that survived firewall
 
 class Hypothesis(BaseModel):
     id: str                          # "h1"
